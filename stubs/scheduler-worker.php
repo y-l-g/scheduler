@@ -12,10 +12,8 @@ if ((!($_SERVER['FRANKENPHP_WORKER'] ?? false)) || !function_exists('frankenphp_
 
 ignore_user_abort(true);
 
-// 1. Resolve Base Path
 $basePath = $_SERVER['APP_BASE_PATH'] ?? $_ENV['APP_BASE_PATH'] ?? dirname(__DIR__);
 
-// 2. Load the Autoloader (CRITICAL FIX)
 if (file_exists($basePath . '/vendor/autoload.php')) {
     require $basePath . '/vendor/autoload.php';
 } else {
@@ -23,16 +21,26 @@ if (file_exists($basePath . '/vendor/autoload.php')) {
     exit(1);
 }
 
-// 3. Ensure STDERR is defined
 if (!defined('STDERR')) {
     define('STDERR', fopen('php://stderr', 'w'));
 }
 
-/*
-|--------------------------------------------------------------------------
-| Start The Octane Worker (Scheduler Mode)
-|--------------------------------------------------------------------------
-*/
+// --------------------------------------------------------------------------
+//  CLI Environment Shim
+// --------------------------------------------------------------------------
+// Laravel and Symfony Console expect these to exist.
+if (!isset($_SERVER['PHP_SELF'])) {
+    $_SERVER['PHP_SELF'] = 'artisan';
+}
+if (!isset($_SERVER['SCRIPT_NAME'])) {
+    $_SERVER['SCRIPT_NAME'] = 'artisan';
+}
+if (!isset($_SERVER['argv'])) {
+    $_SERVER['argv'] = ['artisan', 'schedule:run'];
+}
+if (!isset($_SERVER['argc'])) {
+    $_SERVER['argc'] = count($_SERVER['argv']);
+}
 
 $frankenPhpClient = new FrankenPhpClient();
 
@@ -49,7 +57,10 @@ try {
         try {
             $app = $worker->application();
             $kernel = $app->make(Kernel::class);
+
+            // Execute the schedule run command
             $kernel->call('schedule:run');
+
         } catch (Throwable $e) {
             if ($worker) {
                 try {
