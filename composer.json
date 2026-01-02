@@ -1,0 +1,29 @@
+{
+  "name": "pogo/scheduler",
+  "description": "FrankenPHP Native Scheduler for Laravel",
+  "keywords": [
+    "laravel",
+    "frankenphp",
+    "scheduler",
+    "cron"
+  ],
+  "license": "MIT",
+  "require": {
+    "php": "^8.5",
+    "laravel/framework": "^12.0"
+  },
+  "autoload": {
+    "psr-4": {
+      "Pogo\\Scheduler\\": "src/"
+    }
+  },
+  "extra": {
+    "laravel": {
+      "providers": [
+        "Pogo\\Scheduler\\SchedulerServiceProvider"
+      ]
+    }
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true
+}
