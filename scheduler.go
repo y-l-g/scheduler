@@ -4,10 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"sync"
 	"time"
-	"unsafe"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig"
@@ -180,26 +181,20 @@ func (d *schedulerDispatcher) Start() {
 func (d *schedulerDispatcher) loop() {
 	defer d.wg.Done()
 
-	ticker := time.NewTicker(60 * time.Second)
-	defer ticker.Stop()
-
-	// Align to the next minute start
-	now := time.Now()
-	nextMinute := now.Truncate(time.Minute).Add(time.Minute)
-	sleepDuration := nextMinute.Sub(now)
-
-	d.logger.Info("scheduler: aligned to next minute", slog.Duration("sleep", sleepDuration))
-	time.Sleep(sleepDuration)
-
-	// Trigger immediately after alignment (the :00 second mark)
-	d.trigger()
-
 	for {
+		// Calculate sleep duration to the next minute
+		now := time.Now()
+		nextMinute := now.Truncate(time.Minute).Add(time.Minute)
+		sleepDuration := nextMinute.Sub(now)
+
+		d.logger.Info("scheduler: aligned to next minute", slog.Duration("sleep", sleepDuration))
+
 		select {
 		case <-d.ctx.Done():
 			d.logger.Info("scheduler: shutting down ticker loop")
 			return
-		case <-ticker.C:
+		case <-time.After(sleepDuration):
+			// Trigger the worker
 			d.trigger()
 		}
 	}
@@ -213,14 +208,14 @@ func (d *schedulerDispatcher) trigger() {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 65*time.Second)
-	defer cancel()
+	// Create a dummy HTTP request
+	// The path is not strictly used by the worker loop in scheduler mode, however we set it
+	// to simulate a valid request environment.
+	req, _ := http.NewRequest("GET", "/artisan", http.NoBody)
+	rr := httptest.NewRecorder()
 
-	// SendMessage is used for headless worker interaction.
-	// We pass nil for the body (unsafe.Pointer) as we are just sending a signal.
-	_, err := d.worker.SendMessage(ctx, unsafe.Pointer(nil), nil)
-
-	if err != nil {
+	// 2. Dispatch to the worker
+	if err := d.worker.SendRequest(rr, req); err != nil {
 		d.logger.Error("scheduler: failed to request worker", slog.Any("error", err))
 	}
 }
