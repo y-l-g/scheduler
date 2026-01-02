@@ -12,9 +12,18 @@ if ((!($_SERVER['FRANKENPHP_WORKER'] ?? false)) || !function_exists('frankenphp_
 
 ignore_user_abort(true);
 
+// 1. Resolve Base Path
 $basePath = $_SERVER['APP_BASE_PATH'] ?? $_ENV['APP_BASE_PATH'] ?? dirname(__DIR__);
 
-// Ensure STDERR is available for logging
+// 2. Load the Autoloader (CRITICAL FIX)
+if (file_exists($basePath . '/vendor/autoload.php')) {
+    require $basePath . '/vendor/autoload.php';
+} else {
+    fwrite(STDERR, "Could not find vendor/autoload.php at $basePath\n");
+    exit(1);
+}
+
+// 3. Ensure STDERR is defined
 if (!defined('STDERR')) {
     define('STDERR', fopen('php://stderr', 'w'));
 }
@@ -23,11 +32,6 @@ if (!defined('STDERR')) {
 |--------------------------------------------------------------------------
 | Start The Octane Worker (Scheduler Mode)
 |--------------------------------------------------------------------------
-|
-| This worker acts as the internal cron daemon. It boots the application
-| once and then waits for "ticks" from the Go scheduler to execute
-| the 'schedule:run' command.
-|
 */
 
 $frankenPhpClient = new FrankenPhpClient();
@@ -38,24 +42,15 @@ $worker = tap(new Worker(
 ))->boot();
 
 $requestCount = 0;
-// Restart every hour (60 minutes) to prevent memory leaks in the scheduler process
 $maxRequests = $_ENV['MAX_REQUESTS'] ?? $_SERVER['MAX_REQUESTS'] ?? 60;
 
 try {
-    // payload argument defaults to null to handle signal requests safely
     $handleRequest = static function ($payload = null) use ($worker) {
         try {
-            // Direct application access for Console commands
             $app = $worker->application();
-
             $kernel = $app->make(Kernel::class);
-
-            // Execute the schedule run command
-            // This checks for any tasks that need to run this minute
             $kernel->call('schedule:run');
-
         } catch (Throwable $e) {
-            // Attempt to report exception to Laravel's handler (Sentry, logs, etc)
             if ($worker) {
                 try {
                     report($e);
@@ -63,8 +58,6 @@ try {
                     // Silent fail
                 }
             }
-
-            // Fallback logging to Caddy's stderr
             fwrite(STDERR, "[Scheduler] Error: " . $e->getMessage() . "\n");
         }
     };
@@ -74,6 +67,5 @@ try {
     }
 } finally {
     $worker?->terminate();
-
     gc_collect_cycles();
 }
