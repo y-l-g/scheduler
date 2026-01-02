@@ -14,6 +14,8 @@ ignore_user_abort(true);
 
 $basePath = $_SERVER['APP_BASE_PATH'] ?? $_ENV['APP_BASE_PATH'] ?? dirname(__DIR__);
 
+require_once $basePath . '/vendor/autoload.php';
+
 $frankenPhpClient = new FrankenPhpClient();
 
 $worker = tap(new Worker(
