@@ -58,9 +58,20 @@ func (s *Scheduler) Provision(ctx caddy.Context) error {
 		s.NumThreads = 1
 	}
 
+	s.dispatcher = newSchedulerDispatcher(ctx.Slogger())
+
 	// Use the Caddy integration package to register workers
-	w := frankenphpCaddy.RegisterWorkers(s.Name, s.Worker, s.NumThreads)
-	s.dispatcher = newSchedulerDispatcher(w, ctx.Slogger())
+	// We use the OnServerStartup hook to start the ticker only when FrankenPHP is ready
+	w := frankenphpCaddy.RegisterWorkers(
+		s.Name,
+		s.Worker,
+		s.NumThreads,
+		frankenphp.WithWorkerOnServerStartup(func() {
+			s.dispatcher.Start()
+		}),
+	)
+
+	s.dispatcher.SetWorker(w)
 
 	globalDispatcherMu.Lock()
 	if globalDispatcher != nil {
@@ -137,27 +148,33 @@ var (
 )
 
 type schedulerDispatcher struct {
-	worker frankenphp.Workers
-	logger *slog.Logger
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-	once   sync.Once
+	worker    frankenphp.Workers
+	logger    *slog.Logger
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	once      sync.Once
+	startOnce sync.Once
 }
 
-func newSchedulerDispatcher(w frankenphp.Workers, l *slog.Logger) *schedulerDispatcher {
+func newSchedulerDispatcher(l *slog.Logger) *schedulerDispatcher {
 	ctx, cancel := context.WithCancel(context.Background())
-	d := &schedulerDispatcher{
-		worker: w,
+	return &schedulerDispatcher{
 		logger: l,
 		ctx:    ctx,
 		cancel: cancel,
 	}
+}
 
-	d.wg.Add(1)
-	go d.loop()
+func (d *schedulerDispatcher) SetWorker(w frankenphp.Workers) {
+	d.worker = w
+}
 
-	return d
+func (d *schedulerDispatcher) Start() {
+	d.startOnce.Do(func() {
+		d.wg.Add(1)
+		go d.loop()
+	})
 }
 
 func (d *schedulerDispatcher) loop() {
@@ -191,7 +208,12 @@ func (d *schedulerDispatcher) loop() {
 func (d *schedulerDispatcher) trigger() {
 	d.logger.Debug("scheduler: tick received, requesting worker")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 65*time.Second) // Timeout slightly longer than the interval
+	if d.worker == nil {
+		d.logger.Warn("scheduler: worker not initialized yet")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 65*time.Second)
 	defer cancel()
 
 	// SendMessage is used for headless worker interaction.

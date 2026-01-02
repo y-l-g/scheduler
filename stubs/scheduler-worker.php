@@ -7,13 +7,17 @@ use Laravel\Octane\Worker;
 
 if ((!($_SERVER['FRANKENPHP_WORKER'] ?? false)) || !function_exists('frankenphp_handle_request')) {
     echo 'FrankenPHP must be in worker mode to use this script.';
-
     exit(1);
 }
 
 ignore_user_abort(true);
 
 $basePath = $_SERVER['APP_BASE_PATH'] ?? $_ENV['APP_BASE_PATH'] ?? dirname(__DIR__);
+
+// Ensure STDERR is available for logging
+if (!defined('STDERR')) {
+    define('STDERR', fopen('php://stderr', 'w'));
+}
 
 /*
 |--------------------------------------------------------------------------
@@ -38,15 +42,20 @@ $requestCount = 0;
 $maxRequests = $_ENV['MAX_REQUESTS'] ?? $_SERVER['MAX_REQUESTS'] ?? 60;
 
 try {
-    $handleRequest = static function () use ($worker) {
+    // payload argument defaults to null to handle signal requests safely
+    $handleRequest = static function ($payload = null) use ($worker) {
         try {
             // Direct application access for Console commands
             $app = $worker->application();
 
             $kernel = $app->make(Kernel::class);
+
+            // Execute the schedule run command
+            // This checks for any tasks that need to run this minute
             $kernel->call('schedule:run');
 
         } catch (Throwable $e) {
+            // Attempt to report exception to Laravel's handler (Sentry, logs, etc)
             if ($worker) {
                 try {
                     report($e);
@@ -55,6 +64,7 @@ try {
                 }
             }
 
+            // Fallback logging to Caddy's stderr
             fwrite(STDERR, "[Scheduler] Error: " . $e->getMessage() . "\n");
         }
     };
