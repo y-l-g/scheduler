@@ -1,0 +1,13 @@
+.github export-ignore
+.gitignore export-ignore
+.gitattributes export-ignore
+.hadolint.yaml export-ignore
+.dockerignore export-ignore
+
+README.md export-ignore 
+examples export-ignore 
+Dockerfile export-ignore
+
+module export-ignore
+
+

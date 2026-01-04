@@ -1,0 +1,76 @@
+---
+name: Lint
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  checks: write
+  statuses: write
+
+jobs:
+  lint-go:
+    name: Lint Go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+          cache: false
+
+      - name: Configure CGO flags
+        run: |
+          echo "CGO_CFLAGS=-D_GNU_SOURCE $(php-config --includes)" >> $GITHUB_ENV
+          echo "CGO_LDFLAGS=$(php-config --ldflags) $(php-config --libs)" >> $GITHUB_ENV
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+          args: --timeout=5m --build-tags=nobadger,nomysql,nopgx,nowatcher
+          working-directory: module
+        env:
+          CGO_ENABLED: 1
+
+  lint-php:
+    name: Lint PHP
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.5"
+          tools: php-cs-fixer, cs2pr
+
+      - name: Run PHP-CS-Fixer
+        run: php-cs-fixer fix --config=lib/.php-cs-fixer.dist.php --dry-run --format=checkstyle lib | cs2pr
+
+  lint-misc:
+    name: Lint Misc (Yaml, MD, Bash)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Super-Linter
+        uses: super-linter/super-linter/slim@v8
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LINTER_RULES_PATH: /
+          VALIDATE_YAML: true
+          VALIDATE_MARKDOWN: true
+          VALIDATE_BASH: true
+          VALIDATE_DOCKERFILE_HADOLINT: true
+
+          DEFAULT_BRANCH: main
