@@ -72,5 +72,6 @@ jobs:
           VALIDATE_MARKDOWN: true
           VALIDATE_BASH: true
           VALIDATE_DOCKERFILE_HADOLINT: true
-
+          FILTER_REGEX_EXCLUDE: "vendor/.*"
+          IGNORE_GITIGNORED_FILES: true
           DEFAULT_BRANCH: main
