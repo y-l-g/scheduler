@@ -6,10 +6,10 @@ It runs the scheduler entirely within the FrankenPHP binary, leveraging a lightw
 
 ## Features
 
-*   **Zero External Processes**: No `crond`, no `supervisord`, no sidecar containers.
-*   **Memory Efficient**: Boots the Laravel application **once** and keeps it in memory.
-*   **Precision**: Aligns triggers to the start of the minute (`:00` seconds).
-*   **Safety**: Enforces a single-thread worker to prevent overlapping schedule runs.
+* **Zero External Processes**: No `crond`, no `supervisord`, no sidecar containers.
+* **Memory Efficient**: Boots the Laravel application **once** and keeps it in memory.
+* **Precision**: Aligns triggers to the start of the minute (`:00` seconds).
+* **Safety**: Enforces a single-thread worker to prevent overlapping schedule runs.
 
 ### Installation
 
@@ -54,14 +54,16 @@ Add the `pogo_scheduler` block to your Global Options in the `Caddyfile`.
 
 ## How It Works
 
-1.  **The Ticker (Go)**: A Goroutine wakes up every 60 seconds (aligned to the wall clock).
-2.  **The Trigger**: It sends a signal to a dedicated FrankenPHP worker pool.
-3.  **The Worker (PHP)**: The `scheduler-worker.php` script (running in a dedicated thread) receives the signal and calls `$kernel->call('schedule:run')`.
+1. **The Ticker (Go)**: A Goroutine wakes up every 60 seconds (aligned to the wall clock).
+2. **The Trigger**: It sends a signal to a dedicated FrankenPHP worker pool.
+3. **The Worker (PHP)**: The `scheduler-worker.php` script (running in a dedicated thread) receives the signal and calls `$kernel->call('schedule:run')`.
 
 ### Concurrency Note
+
 The scheduler module forces `num_threads 1` for its worker pool. This guarantees that `schedule:run` is never executed in parallel with itself, effectively preventing overlapping runs at the process level.
 
 If a scheduled task takes longer than 60 seconds:
-1.  The Go ticker tries to send the next signal.
-2.  The signal waits (up to 65s) for the PHP worker to become free.
-3.  Once the previous run finishes, the next one starts immediately.
+
+1. The Go ticker tries to send the next signal.
+2. The signal waits (up to 65s) for the PHP worker to become free.
+3. Once the previous run finishes, the next one starts immediately.

@@ -51,12 +51,16 @@ func TestSchedulerEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp Caddyfile: %v", err)
 	}
-	defer os.Remove(tmpCaddyfile.Name())
+	defer func() {
+		_ = os.Remove(tmpCaddyfile.Name())
+	}()
 
 	if _, err := tmpCaddyfile.WriteString(caddyfileContent); err != nil {
 		t.Fatalf("Failed to write Caddyfile: %v", err)
 	}
-	tmpCaddyfile.Close()
+	if err := tmpCaddyfile.Close(); err != nil {
+		t.Fatalf("Failed to close Caddyfile: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -106,5 +110,5 @@ func TestSchedulerEndToEnd(t *testing.T) {
 	}
 
 	cancel()
-	cmd.Wait()
+	_ = cmd.Wait()
 }
