@@ -11,12 +11,24 @@ It runs the scheduler entirely within the FrankenPHP binary, leveraging a lightw
 * **Precision**: Aligns triggers to the start of the minute (`:00` seconds).
 * **Safety**: Enforces a single-thread worker to prevent overlapping schedule runs.
 
-### Installation
+## Installation
 
-Follow [the instructions to install a ZTS version of libphp and `xcaddy`](https://frankenphp.dev/docs/compile/#install-php).
-Then, use [`xcaddy`](https://github.com/caddyserver/xcaddy) to build FrankenPHP with the `pogo-queue` module:
+### 1. Get the Binary
 
-```console
+You have two options to get FrankenPHP with the scheduler module enabled:
+
+#### Option A: Pre-built Binary or Docker (Recommended)
+
+You can use the pre-compiled binaries or Docker images that already include the scheduler module.
+
+* **Binaries:** Download from [FrankenPHP with websocket, queue, and scheduler releases](https://github.com/y-l-g/websocket/releases).
+* **Docker:** Use the [docker image](https://github.com/y-l-g?tab=packages&repo_name=websocket).
+
+#### Option B: Compile from Source
+
+If you prefer to build it yourself, follow [the instructions to install a ZTS version of libphp and `xcaddy`](https://frankenphp.dev/docs/compile/#install-php). Then, use `xcaddy` to build FrankenPHP with the `pogo-scheduler` module:
+
+```bash
 CGO_ENABLED=1 \
 CGO_CFLAGS=$(php-config --includes) \
 CGO_LDFLAGS="$(php-config --ldflags) $(php-config --libs)" \
@@ -27,27 +39,84 @@ xcaddy build \
     --with github.com/dunglas/caddy-cbrotli
 ```
 
-Or use the docker image or the binary provided in this repo
+### 2. Install Laravel Dependencies
 
-### Install the Laravel Package
-
-```bash
-composer require pogo/scheduler
-```
-
-### Install the Worker Script
+Ensure Laravel Octane is installed and configured for FrankenPHP:
 
 ```bash
-php artisan pogo:scheduler:install
+php artisan octane:install --server=frankenphp
 ```
 
-This command publishes `public/scheduler-worker.php`.
+### 3. Create Worker Script
 
-## Configuration
+Create a new file at `public/scheduler-worker.php`.
+This script is a dedicated entry point that runs the scheduler command.
 
-Add the `pogo_scheduler` block to your Global Options in the `Caddyfile`. This is an adapted copy of the official octane caddyfile.
+```php
+<?php
 
-```caddyfile
+use Illuminate\Contracts\Console\Kernel;
+use Laravel\Octane\ApplicationFactory;
+use Laravel\Octane\FrankenPhp\FrankenPhpClient;
+use Laravel\Octane\Worker;
+
+if ((!($_SERVER['FRANKENPHP_WORKER'] ?? false)) || !function_exists('frankenphp_handle_request')) {
+    echo 'FrankenPHP must be in worker mode to use this script.';
+    exit(1);
+}
+
+ignore_user_abort(true);
+
+$basePath = $_SERVER['APP_BASE_PATH'] ?? $_ENV['APP_BASE_PATH'] ?? dirname(__DIR__);
+
+require_once $basePath . '/vendor/autoload.php';
+
+$frankenPhpClient = new FrankenPhpClient();
+
+$worker = tap(new Worker(
+    new ApplicationFactory($basePath),
+    $frankenPhpClient
+))->boot();
+
+$requestCount = 0;
+$maxRequests = $_ENV['MAX_REQUESTS'] ?? $_SERVER['MAX_REQUESTS'] ?? 60;
+
+try {
+    $handleRequest = static function ($payload = null) use ($worker) {
+        try {
+            $app = $worker->application();
+            $kernel = $app->make(Kernel::class);
+
+            // Execute the schedule run command
+            $kernel->call('schedule:run');
+
+        } catch (Throwable $e) {
+            if ($worker) {
+                try {
+                    report($e);
+                } catch (Throwable $ex) {
+                    // Silent fail
+                }
+            }
+            fwrite(STDERR, "[Scheduler] Error: " . $e->getMessage() . "\n");
+        }
+    };
+
+    while ($requestCount < $maxRequests && frankenphp_handle_request($handleRequest)) {
+        $requestCount++;
+    }
+} finally {
+    $worker?->terminate();
+    gc_collect_cycles();
+}
+```
+
+### 4. Configure Caddyfile
+
+Update your `Caddyfile` (usually at the project root) to include the `pogo_scheduler` block.
+Below is a complete example based on the official Octane configuration.
+
+```caddy
 {
     {$CADDY_GLOBAL_OPTIONS}
 
@@ -60,6 +129,8 @@ Add the `pogo_scheduler` block to your Global Options in the `Caddyfile`. This i
             {$CADDY_SERVER_WATCH_DIRECTIVES}
         }
     }
+    
+    # Scheduler Configuration
     pogo_scheduler {
         # Path to the published worker script
         worker {$APP_PUBLIC_PATH}/scheduler-worker.php
@@ -72,7 +143,7 @@ Add the `pogo_scheduler` block to your Global Options in the `Caddyfile`. This i
     log {
         level {$CADDY_SERVER_LOG_LEVEL}
 
-    # Redact the authorization query parameter that can be set by Mercure...
+        # Redact the authorization query parameter that can be set by Mercure...
         format filter {
             wrap {$CADDY_SERVER_LOGGER}
             fields {
@@ -82,6 +153,7 @@ Add the `pogo_scheduler` block to your Global Options in the `Caddyfile`. This i
             }
         }
     }
+    
     route {
         root * "{$APP_PUBLIC_PATH}"
         encode zstd br gzip
@@ -99,11 +171,15 @@ Add the `pogo_scheduler` block to your Global Options in the `Caddyfile`. This i
 }
 ```
 
-Run octane with the adapted caddyfile
+### 5. Run Octane
+
+Start the server using the configured Caddyfile:
 
 ```bash
 php artisan octane:frankenphp --caddyfile=Caddyfile
 ```
+
+---
 
 ## How It Works
 
@@ -118,5 +194,5 @@ The scheduler module forces `num_threads 1` for its worker pool. This guarantees
 If a scheduled task takes longer than 60 seconds:
 
 1. The Go ticker tries to send the next signal.
-2. The signal waits (up to 65s) for the PHP worker to become free.
-3. Once the previous run finishes, the next one starts immediately.
+2. The signal waits (up to 65s) for the PHP worker to become available.
+3. If the previous minute's task is still running after this wait, the new tick is skipped.
