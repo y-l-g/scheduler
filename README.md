@@ -1,15 +1,8 @@
 # Pogo Scheduler
 
-A [FrankenPHP](https://frankenphp.dev) extension and Laravel package that replaces the system `crond` and `php artisan schedule:run`.
+A [Caddy](https://caddyserver.com) / [FrankenPHP](https://frankenphp.dev) module that can replace the system `crond` in some scenarios.
 
-It runs the scheduler entirely within the FrankenPHP binary, leveraging a lightweight Go ticker to trigger the PHP worker exactly every minute.
-
-## Features
-
-* **Zero External Processes**: No `crond`, no `supervisord`, no sidecar containers.
-* **Memory Efficient**: Boots the Laravel application **once** and keeps it in memory.
-* **Precision**: Aligns triggers to the start of the minute (`:00` seconds).
-* **Safety**: Enforces a single-thread worker to prevent overlapping schedule runs.
+It runs a lightweight Go ticker and executes a configurable command (e.g. `php artisan schedule:run`) every minute, aligned to the wall clock.
 
 ## Installation
 
@@ -39,160 +32,42 @@ xcaddy build \
     --with github.com/dunglas/caddy-cbrotli
 ```
 
-### 2. Install Laravel Dependencies
+### 2. Configure Caddyfile
 
-Ensure Laravel Octane is installed and configured for FrankenPHP:
-
-```bash
-php artisan octane:install --server=frankenphp
-```
-
-### 3. Create Worker Script
-
-Create a new file at `public/scheduler-worker.php`.
-This script is a dedicated entry point that runs the scheduler command.
-
-```php
-<?php
-
-use Illuminate\Contracts\Console\Kernel;
-use Laravel\Octane\ApplicationFactory;
-use Laravel\Octane\FrankenPhp\FrankenPhpClient;
-use Laravel\Octane\Worker;
-
-if ((!($_SERVER['FRANKENPHP_WORKER'] ?? false)) || !function_exists('frankenphp_handle_request')) {
-    echo 'FrankenPHP must be in worker mode to use this script.';
-    exit(1);
-}
-
-ignore_user_abort(true);
-
-$basePath = $_SERVER['APP_BASE_PATH'] ?? $_ENV['APP_BASE_PATH'] ?? dirname(__DIR__);
-
-require_once $basePath . '/vendor/autoload.php';
-
-$frankenPhpClient = new FrankenPhpClient();
-
-$worker = tap(new Worker(
-    new ApplicationFactory($basePath),
-    $frankenPhpClient
-))->boot();
-
-$requestCount = 0;
-$maxRequests = $_ENV['MAX_REQUESTS'] ?? $_SERVER['MAX_REQUESTS'] ?? 60;
-
-try {
-    $handleRequest = static function ($payload = null) use ($worker) {
-        try {
-            $app = $worker->application();
-            $kernel = $app->make(Kernel::class);
-
-            // Execute the schedule run command
-            $kernel->call('schedule:run');
-
-        } catch (Throwable $e) {
-            if ($worker) {
-                try {
-                    report($e);
-                } catch (Throwable $ex) {
-                    // Silent fail
-                }
-            }
-            fwrite(STDERR, "[Scheduler] Error: " . $e->getMessage() . "\n");
-        }
-    };
-
-    while ($requestCount < $maxRequests && frankenphp_handle_request($handleRequest)) {
-        $requestCount++;
-    }
-} finally {
-    $worker?->terminate();
-    gc_collect_cycles();
-}
-```
-
-### 4. Configure Caddyfile
-
-Update your `Caddyfile` (usually at the project root) to include the `pogo_scheduler` block.
-Below is a complete example based on the official Octane configuration.
+Add a `pogo_scheduler` block to your Caddyfile. Example for Laravel:
 
 ```caddy
 {
-    {$CADDY_GLOBAL_OPTIONS}
-
-    admin {$CADDY_SERVER_ADMIN_HOST}:{$CADDY_SERVER_ADMIN_PORT}
-
-    frankenphp {
-        worker {
-            file "{$APP_PUBLIC_PATH}/frankenphp-worker.php"
-            {$CADDY_SERVER_WORKER_DIRECTIVE}
-            {$CADDY_SERVER_WATCH_DIRECTIVES}
-        }
-    }
-    
-    # Scheduler Configuration
     pogo_scheduler {
-        # Path to the published worker script
-        worker {$APP_PUBLIC_PATH}/scheduler-worker.php
-    }
-}
-
-{$CADDY_EXTRA_CONFIG}
-
-{$CADDY_SERVER_SERVER_NAME} {
-    log {
-        level {$CADDY_SERVER_LOG_LEVEL}
-
-        # Redact the authorization query parameter that can be set by Mercure...
-        format filter {
-            wrap {$CADDY_SERVER_LOGGER}
-            fields {
-                uri query {
-                    replace authorization REDACTED
-                }
-            }
-        }
-    }
-    
-    route {
-        root * "{$APP_PUBLIC_PATH}"
-        encode zstd br gzip
-
-        # Mercure configuration is injected here...
-        {$CADDY_SERVER_EXTRA_DIRECTIVES}
-
-        php_server {
-            index frankenphp-worker.php
-            try_files {path} frankenphp-worker.php
-            # Required for the public/storage/ directory...
-            resolve_root_symlink
-        }
+        command php artisan schedule:run
+        dir     /var/www/html
+        timeout 5m
     }
 }
 ```
 
-### 5. Run Octane
+- **command**: command to run every minute (default: `php artisan schedule:run`).
+- **dir**: working directory for the command (optional).
+- **timeout**: max duration per run (default: 5m).
+
+### 3. Run Octane
 
 Start the server using the configured Caddyfile:
 
 ```bash
 php artisan octane:frankenphp --caddyfile=Caddyfile
+# or
+./frankenphp run 
 ```
 
 ---
 
 ## How It Works
 
-1. **The Ticker (Go)**: A Goroutine wakes up every 60 seconds (aligned to the wall clock).
-2. **The Trigger**: It sends a signal to a dedicated FrankenPHP worker pool.
-3. **The Worker (PHP)**: The `scheduler-worker.php` script (running in a dedicated thread) receives the signal and calls `$kernel->call('schedule:run')`.
+1. **The Ticker (Go)**: A goroutine wakes up every 60 seconds, aligned to the start of each minute (`:00`).
+2. **The Command**: At each tick, the module runs the configured command in a subprocess (e.g. `php artisan schedule:run`).
+3. **Timeout**: Each run is bounded by the configured `timeout`; the process is killed if it exceeds it.
 
 ### Concurrency Note
 
-The scheduler module forces `num_threads 1` for its worker pool. This guarantees that `schedule:run` is never executed in parallel with itself, effectively preventing overlapping runs at the process level.
-
-If a scheduled task takes longer than 60 seconds:
-
-1. The Go ticker tries to send the next signal.
-2. The signal waits (up to 65s) for the PHP worker to become available.
-3. If the previous minute's task is still running after this wait, the new tick is skipped.
+Each tick runs the command in a new process. If a run lasts longer than one minute, the next tick will start another process, so runs can overlap. To avoid that, set a `timeout` shorter than 60s or ensure your scheduled tasks finish within a minute.

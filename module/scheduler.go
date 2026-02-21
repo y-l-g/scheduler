@@ -2,11 +2,8 @@ package scheduler
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
-	"strconv"
+	"os/exec"
 	"sync"
 	"time"
 
@@ -14,13 +11,6 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
-	"github.com/dunglas/frankenphp"
-	frankenphpCaddy "github.com/dunglas/frankenphp/caddy"
-)
-
-var (
-	globalDispatcher   *schedulerDispatcher
-	globalDispatcherMu sync.RWMutex
 )
 
 func init() {
@@ -29,11 +19,14 @@ func init() {
 }
 
 type Scheduler struct {
-	Worker     string `json:"worker,omitempty"`
-	NumThreads int    `json:"numthreads,omitempty"`
-	Name       string `json:"name,omitempty"`
+	Command []string       `json:"command,omitempty"`
+	Dir     string         `json:"dir,omitempty"`
+	Timeout caddy.Duration `json:"timeout,omitempty"`
 
-	dispatcher *schedulerDispatcher
+	logger *slog.Logger
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 func (Scheduler) CaddyModule() caddy.ModuleInfo {
@@ -44,89 +37,117 @@ func (Scheduler) CaddyModule() caddy.ModuleInfo {
 }
 
 func (s *Scheduler) Provision(ctx caddy.Context) error {
-	if s.Name == "" {
-		s.Name = "pogo-scheduler"
+	s.logger = ctx.Slogger()
+
+	if len(s.Command) == 0 {
+		s.Command = []string{"php", "artisan", "schedule:run"}
+	}
+	if s.Timeout <= 0 {
+		s.Timeout = caddy.Duration(5 * time.Minute)
 	}
 
-	if s.Worker == "" {
-		return fmt.Errorf("scheduler worker path is required")
-	}
+	return nil
+}
 
-	if s.NumThreads > 1 {
-		slog.Warn("pogo_scheduler: num_threads > 1 is not recommended for scheduler, enforcing 1")
-		s.NumThreads = 1
-	} else if s.NumThreads <= 0 {
-		s.NumThreads = 1
-	}
+func (s *Scheduler) Start() error {
+	s.ctx, s.cancel = context.WithCancel(context.Background())
+	s.wg.Add(1)
 
-	s.dispatcher = newSchedulerDispatcher(ctx.Slogger())
+	go s.loop()
 
-	// Use the Caddy integration package to register workers
-	// We use the OnServerStartup hook to start the ticker only when FrankenPHP is ready
-	w := frankenphpCaddy.RegisterWorkers(
-		s.Name,
-		s.Worker,
-		s.NumThreads,
-		frankenphp.WithWorkerOnServerStartup(func() {
-			s.dispatcher.Start()
-		}),
+	s.logger.Info("scheduler started",
+		slog.Any("command", s.Command),
+		slog.String("dir", s.Dir),
 	)
-
-	s.dispatcher.SetWorker(w)
-
-	globalDispatcherMu.Lock()
-	if globalDispatcher != nil {
-		go globalDispatcher.shutdown()
-	}
-	globalDispatcher = s.dispatcher
-	globalDispatcherMu.Unlock()
-
 	return nil
 }
 
-func (s *Scheduler) Cleanup() error {
-	if s.dispatcher != nil {
-		s.dispatcher.shutdown()
+func (s *Scheduler) Stop() error {
+	if s.cancel != nil {
+		s.cancel()
 	}
-
-	globalDispatcherMu.Lock()
-	if globalDispatcher == s.dispatcher {
-		globalDispatcher = nil
-	}
-	globalDispatcherMu.Unlock()
-
+	s.wg.Wait()
+	s.logger.Info("scheduler stopped")
 	return nil
 }
 
+func (s *Scheduler) loop() {
+	defer s.wg.Done()
+
+	for {
+		now := time.Now()
+		nextMinute := now.Truncate(time.Minute).Add(time.Minute)
+		sleepDuration := nextMinute.Sub(now)
+
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-time.After(sleepDuration):
+			go s.exec()
+		}
+	}
+}
+
+func (s *Scheduler) exec() {
+	ctx, cancel := context.WithTimeout(s.ctx, time.Duration(s.Timeout))
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, s.Command[0], s.Command[1:]...)
+	if s.Dir != "" {
+		cmd.Dir = s.Dir
+	}
+
+	out, err := cmd.CombinedOutput()
+
+	if err != nil {
+		s.logger.Error("schedule run failed",
+			slog.String("output", string(out)),
+			slog.Any("error", err),
+		)
+		return
+	}
+
+	if len(out) > 0 {
+		s.logger.Info("schedule run output", slog.String("output", string(out)))
+	}
+}
+
+// UnmarshalCaddyfile sets up the module from Caddyfile tokens.
+// Syntax:
+//
+//	pogo_scheduler {
+//	    command php artisan schedule:run
+//	    dir /var/www/html
+//	    timeout 2m
+//	}
 func (s *Scheduler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
 		for d.NextBlock(0) {
 			switch d.Val() {
-			case "worker":
+			case "command":
+				s.Command = d.RemainingArgs()
+				if len(s.Command) == 0 {
+					return d.ArgErr()
+				}
+			case "dir":
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
-				s.Worker = d.Val()
-			case "name":
+				s.Dir = d.Val()
+			case "timeout":
 				if !d.NextArg() {
 					return d.ArgErr()
 				}
-				s.Name = d.Val()
-			case "num_threads":
-				if !d.NextArg() {
-					return d.ArgErr()
-				}
-				t, err := strconv.Atoi(d.Val())
+				dur, err := caddy.ParseDuration(d.Val())
 				if err != nil {
-					return d.Errf("failed to parse num_threads: %v", err)
+					return d.Errf("invalid duration %s: %v", d.Val(), err)
 				}
-				s.NumThreads = t
+				s.Timeout = caddy.Duration(dur)
 			default:
-				return d.Errf(`unrecognized subdirective "%s"`, d.Val())
+				return d.Errf("unrecognized subdirective: %s", d.Val())
 			}
 		}
 	}
-
 	return nil
 }
 
@@ -143,87 +164,8 @@ func parseGlobalOption(d *caddyfile.Dispenser, _ any) (any, error) {
 }
 
 var (
-	_ caddy.Module       = (*Scheduler)(nil)
-	_ caddy.Provisioner  = (*Scheduler)(nil)
-	_ caddy.CleanerUpper = (*Scheduler)(nil)
+	_ caddy.Module          = (*Scheduler)(nil)
+	_ caddy.App             = (*Scheduler)(nil)
+	_ caddy.Provisioner     = (*Scheduler)(nil)
+	_ caddyfile.Unmarshaler = (*Scheduler)(nil)
 )
-
-type schedulerDispatcher struct {
-	worker    frankenphp.Workers
-	logger    *slog.Logger
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
-	once      sync.Once
-	startOnce sync.Once
-}
-
-func newSchedulerDispatcher(l *slog.Logger) *schedulerDispatcher {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &schedulerDispatcher{
-		logger: l,
-		ctx:    ctx,
-		cancel: cancel,
-	}
-}
-
-func (d *schedulerDispatcher) SetWorker(w frankenphp.Workers) {
-	d.worker = w
-}
-
-func (d *schedulerDispatcher) Start() {
-	d.startOnce.Do(func() {
-		d.wg.Add(1)
-		go d.loop()
-	})
-}
-
-func (d *schedulerDispatcher) loop() {
-	defer d.wg.Done()
-
-	for {
-		// Calculate sleep duration to the next minute
-		now := time.Now()
-		nextMinute := now.Truncate(time.Minute).Add(time.Minute)
-		sleepDuration := nextMinute.Sub(now)
-
-		d.logger.Info("scheduler: aligned to next minute", slog.Duration("sleep", sleepDuration))
-
-		select {
-		case <-d.ctx.Done():
-			d.logger.Info("scheduler: shutting down ticker loop")
-			return
-		case <-time.After(sleepDuration):
-			// Trigger the worker
-			d.trigger()
-		}
-	}
-}
-
-func (d *schedulerDispatcher) trigger() {
-	d.logger.Debug("scheduler: tick received, requesting worker")
-
-	if d.worker == nil {
-		d.logger.Warn("scheduler: worker not initialized yet")
-		return
-	}
-
-	// Create a dummy HTTP request
-	// The path is not strictly used by the worker loop in scheduler mode, however we set it
-	// to simulate a valid request environment.
-	req, _ := http.NewRequest("GET", "/artisan", http.NoBody)
-	rr := httptest.NewRecorder()
-
-	// 2. Dispatch to the worker
-	if err := d.worker.SendRequest(rr, req); err != nil {
-		d.logger.Error("scheduler: failed to request worker", slog.Any("error", err))
-	}
-}
-
-func (d *schedulerDispatcher) shutdown() {
-	d.once.Do(func() {
-		d.cancel()
-		d.wg.Wait()
-		d.logger.Info("scheduler: dispatcher shut down")
-	})
-}

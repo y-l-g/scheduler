@@ -17,98 +17,119 @@ func TestSchedulerEndToEnd(t *testing.T) {
 		t.Skip("Skipping long-running integration test in short mode")
 	}
 
+	// 1. Setup paths and artifacts
 	_, currentFile, _, _ := runtime.Caller(0)
 	testDir := filepath.Dir(currentFile)
 	rootDir := filepath.Dir(testDir)
 
-	binPath := filepath.Join(rootDir, "frankenphp")
+	// Locate the binary
+	binPath := filepath.Join(rootDir, "caddy")
 	if _, err := os.Stat(binPath); os.IsNotExist(err) {
-		t.Fatalf("FrankenPHP binary not found at %s. Build it first.", binPath)
-	}
-
-	logFile := filepath.Join(testDir, "scheduler_test.log")
-	_ = os.Remove(logFile)
-
-	workerPath := filepath.Join(testDir, "worker.php")
-
-	caddyfileContent := fmt.Sprintf(`
-	{
-		auto_https off
-		frankenphp
-		order php_server before file_server
-		
-		pogo_scheduler {
-			worker "%s"
+		binPath = filepath.Join(rootDir, "frankenphp")
+		if _, err := os.Stat(binPath); os.IsNotExist(err) {
+			t.Fatalf("Binary not found. Build it first (e.g., 'xcaddy build'). Checked: %s", rootDir)
 		}
 	}
 
-	:8080 {
-		php_server
+	// Create a temp file for the trigger
+	triggerFile, err := os.CreateTemp("", "scheduler_trigger_*.txt")
+	if err != nil {
+		t.Fatalf("Failed to create temp trigger file: %v", err)
 	}
-	`, workerPath)
+	triggerPath := triggerFile.Name()
+	triggerFile.Close()
+	// Ensure we clean up the file
+	defer os.Remove(triggerPath)
 
-	tmpCaddyfile, err := os.CreateTemp("", "Caddyfile_Scheduler.*")
+	// 2. Define the command with PROPER QUOTING for Caddyfile
+	var fullCommand string
+	// Escape backslashes for Windows paths in Caddyfile string
+	escapedTriggerPath := strings.ReplaceAll(triggerPath, "\\", "\\\\")
+
+	if runtime.GOOS == "windows" {
+		// cmd /C "echo TICK >> path"
+		// The quotes around the echo command ensure Caddy parses it as one argument
+		fullCommand = fmt.Sprintf("cmd /C \"echo TICK >> %s\"", escapedTriggerPath)
+	} else {
+		// sh -c "echo 'TICK' >> path"
+		// The quotes around the script ensure 'sh' receives the whole string as the -c argument
+		fullCommand = fmt.Sprintf("sh -c \"echo 'TICK' >> %s\"", escapedTriggerPath)
+	}
+
+	// 3. Construct Caddyfile
+	caddyfileContent := fmt.Sprintf(`
+	{
+		admin off
+		
+		pogo_scheduler {
+			command %s
+			timeout 5s
+		}
+	}
+	`, fullCommand)
+
+	tmpCaddyfile, err := os.CreateTemp("", "Caddyfile_Scheduler_Test.*")
 	if err != nil {
 		t.Fatalf("Failed to create temp Caddyfile: %v", err)
 	}
-	defer func() {
-		_ = os.Remove(tmpCaddyfile.Name())
-	}()
+	defer os.Remove(tmpCaddyfile.Name())
 
 	if _, err := tmpCaddyfile.WriteString(caddyfileContent); err != nil {
 		t.Fatalf("Failed to write Caddyfile: %v", err)
 	}
-	if err := tmpCaddyfile.Close(); err != nil {
-		t.Fatalf("Failed to close Caddyfile: %v", err)
-	}
+	tmpCaddyfile.Close()
 
+	// 4. Start Caddy
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, binPath, "run", "--config", tmpCaddyfile.Name())
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	serverCmd := exec.CommandContext(ctx, binPath, "run", "--config", tmpCaddyfile.Name())
+	serverCmd.Stdout = os.Stdout
+	serverCmd.Stderr = os.Stderr
 
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("Failed to start server: %v", err)
+	if err := serverCmd.Start(); err != nil {
+		t.Fatalf("Failed to start Caddy: %v", err)
 	}
+	t.Logf("Caddy started using config: %s", tmpCaddyfile.Name())
 
-	t.Log("Server started. Waiting for scheduler alignment...")
-
+	// 5. Calculate Wait Time
 	now := time.Now()
 	nextMinute := now.Truncate(time.Minute).Add(time.Minute)
-	// Wait until the minute mark + 2 seconds for the tick to process
+	// Add 2 seconds buffer for execution time
 	waitDuration := time.Until(nextMinute) + 2*time.Second
 
-	t.Logf("Current: %s. Target: %s. Sleeping %s...", now.Format(time.TimeOnly), nextMinute.Format(time.TimeOnly), waitDuration)
+	t.Logf("Current: %s", now.Format(time.TimeOnly))
+	t.Logf("Next Tick: %s", nextMinute.Format(time.TimeOnly))
+	t.Logf("Sleeping: %s", waitDuration.Round(time.Second))
 
-	time.Sleep(waitDuration)
+	select {
+	case <-time.After(waitDuration):
+		// Time passed
+	case <-ctx.Done():
+		t.Fatal("Context cancelled unexpectedly")
+	}
 
-	// Verification
-	content, err := os.ReadFile(logFile)
-	if err != nil {
-		// Retry once after 5s
-		time.Sleep(5 * time.Second)
-		content, err = os.ReadFile(logFile)
-		if err != nil {
-			t.Fatalf("Log file not found. Worker failed to trigger. Error: %v", err)
+	// 6. Verification
+	// We might need a small retry loop if disk I/O is slow (unlikely for echo)
+	var output string
+	for i := 0; i < 3; i++ {
+		content, err := os.ReadFile(triggerPath)
+		if err == nil {
+			output = strings.TrimSpace(string(content))
+			if strings.Contains(output, "TICK") {
+				break
+			}
 		}
+		time.Sleep(1 * time.Second)
 	}
 
-	logs := strings.TrimSpace(string(content))
-	lines := strings.Split(logs, "\n")
+	t.Logf("Trigger File Content: %q", output)
 
-	if len(lines) == 0 || (len(lines) == 1 && lines[0] == "") {
-		t.Fatalf("Log file empty. Worker did not write anything.")
+	if !strings.Contains(output, "TICK") {
+		t.Fatalf("Scheduler failed. Expected 'TICK' in file %s, got '%s'.\nDebug info: Check if sh/cmd is available in PATH.", triggerPath, output)
 	}
 
-	t.Logf("Worker Triggered! Logs: %v", lines)
-
-	// Ensure we don't have excessive writes (which would indicate a crash loop)
-	if len(lines) > 2 {
-		t.Fatalf("Too many log entries (%d). Worker might be crashing/restarting instead of waiting for ticks.", len(lines))
-	}
-
+	// 7. Cleanup
 	cancel()
-	_ = cmd.Wait()
+	_ = serverCmd.Wait()
 }
