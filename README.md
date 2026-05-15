@@ -6,31 +6,38 @@ It runs a lightweight Go ticker and executes a configurable command (e.g. `php a
 
 ## Installation
 
-### 1. Get the Binary
+### 1. Docker
 
-You have two options to get FrankenPHP with the scheduler module enabled:
+Build a FrankenPHP binary that includes Pogo Scheduler with `xcaddy`. See the official
+[FrankenPHP Docker documentation](https://frankenphp.dev/docs/docker/) for the
+base image details.
 
-#### Option A: Pre-built Binary or Docker (Recommended)
+Example Dockerfile from this repository root:
 
-You can use the pre-compiled binaries or Docker images that already include the scheduler module.
+```dockerfile
+FROM dunglas/frankenphp:builder AS builder
 
-* **Binaries:** Download from [FrankenPHP with websocket, queue, and scheduler releases](https://github.com/y-l-g/websocket/releases).
-* **Docker:** Use the [docker image](https://github.com/y-l-g?tab=packages&repo_name=websocket).
+COPY --from=caddy:builder /usr/bin/xcaddy /usr/bin/xcaddy
+COPY . /src/scheduler
 
-#### Option B: Compile from Source
+RUN CGO_ENABLED=1 \
+    XCADDY_SETCAP=1 \
+    XCADDY_GO_BUILD_FLAGS="-ldflags='-w -s' -tags=nobadger,nomysql,nopgx" \
+    CGO_CFLAGS="$(php-config --includes)" \
+    CGO_LDFLAGS="$(php-config --ldflags) $(php-config --libs)" \
+    xcaddy build \
+        --output /usr/local/bin/frankenphp \
+        --with github.com/dunglas/frankenphp=./ \
+        --with github.com/dunglas/frankenphp/caddy=./caddy  \
+        --with github.com/dunglas/caddy-cbrotli \
+        --with github.com/y-l-g/scheduler/module=./src/scheduler/module
 
-If you prefer to build it yourself, follow [the instructions to install a ZTS version of libphp and `xcaddy`](https://frankenphp.dev/docs/compile/#install-php). Then, use `xcaddy` to build FrankenPHP with the `pogo-scheduler` module:
+FROM dunglas/frankenphp AS runner
 
-```bash
-CGO_ENABLED=1 \
-CGO_CFLAGS=$(php-config --includes) \
-CGO_LDFLAGS="$(php-config --ldflags) $(php-config --libs)" \
-xcaddy build \
-    --output frankenphp \
-    --with github.com/y-l-g/scheduler/module \
-    --with github.com/dunglas/frankenphp/caddy \
-    --with github.com/dunglas/caddy-cbrotli
+COPY --from=builder /usr/local/bin/frankenphp /usr/local/bin/frankenphp
 ```
+
+Then copy your app and `Caddyfile` into the runner image as usual.
 
 ### 2. Configure Caddyfile
 
