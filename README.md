@@ -1,8 +1,10 @@
 # Pogo Scheduler
 
-A [Caddy](https://caddyserver.com) / [FrankenPHP](https://frankenphp.dev) module that can replace the system `crond` in some scenarios.
+A small [Caddy](https://caddyserver.com) / [FrankenPHP](https://frankenphp.dev) module that acts as an embedded cron trigger for constrained or single-binary PHP deployments.
 
-It runs a lightweight Go ticker and executes a configurable command (e.g. `php artisan schedule:run`) every minute, aligned to the wall clock.
+It runs a lightweight Go ticker and executes a configurable command, such as `php artisan schedule:run`, every minute aligned to the wall clock.
+
+Pogo Scheduler is intentionally not a distributed scheduler. In Kubernetes production environments, prefer native `CronJob` resources.
 
 ## Installation
 
@@ -46,9 +48,11 @@ Add a `pogo_scheduler` block to your Caddyfile. Example for Laravel:
 ```caddy
 {
     pogo_scheduler {
-        command php artisan schedule:run
-        dir     /var/www/html
-        timeout 5m
+        command        php artisan schedule:run
+        dir            /var/www/html
+        timeout        5m
+        overlap        skip
+        shutdown_grace 30s
     }
 }
 ```
@@ -56,6 +60,8 @@ Add a `pogo_scheduler` block to your Caddyfile. Example for Laravel:
 - **command**: command to run every minute (default: `php artisan schedule:run`).
 - **dir**: working directory for the command (optional).
 - **timeout**: max duration per run (default: 5m).
+- **overlap**: `skip` or `allow` (default: `skip`). When set to `skip`, a tick is skipped if the previous command is still running.
+- **shutdown_grace**: max time to let an active command finish during shutdown before it is cancelled (default: 30s).
 
 ### 3. Run Octane
 
@@ -74,7 +80,39 @@ php artisan octane:frankenphp --caddyfile=Caddyfile
 1. **The Ticker (Go)**: A goroutine wakes up every 60 seconds, aligned to the start of each minute (`:00`).
 2. **The Command**: At each tick, the module runs the configured command in a subprocess (e.g. `php artisan schedule:run`).
 3. **Timeout**: Each run is bounded by the configured `timeout`; the process is killed if it exceeds it.
+4. **Local Overlap Guard**: By default, a new tick is skipped if the previous command is still running.
+5. **Graceful Shutdown**: On Caddy shutdown or reload, no new commands are started. The active command can finish within `shutdown_grace`; after that, it is cancelled.
 
-### Concurrency Note
+## When To Use It
 
-Each tick runs the command in a new process. If a run lasts longer than one minute, the next tick will start another process, so runs can overlap. To avoid that, set a `timeout` shorter than 60s or ensure your scheduled tasks finish within a minute.
+Good fits:
+
+- Single VPS or single-server deployments.
+- Docker Compose or small Docker setups where you want to avoid `cron`, `supervisord`, or a separate scheduler container.
+- PaaS environments where the app has one long-running web process but no system cron.
+- Development and staging environments where you want scheduler behavior without host setup.
+- A dedicated singleton scheduler service using the same application image.
+
+Poor fits:
+
+- Kubernetes production. Use native `CronJob` resources instead.
+- Horizontally scaled web replicas unless your application uses shared locks, such as Laravel `onOneServer()` / `withoutOverlapping()` with a shared cache backend.
+- Critical exactly-once workflows without application-level idempotency and locking.
+
+## Overlap Behavior
+
+The default is conservative:
+
+```caddy
+overlap skip
+```
+
+If one run is still active at the next minute boundary, the new run is skipped and a warning is logged.
+
+You can opt into concurrent runs:
+
+```caddy
+overlap allow
+```
+
+Use `allow` only when the scheduled command is already safe to run concurrently.

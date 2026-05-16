@@ -54,8 +54,8 @@ jobs:
         run: |
           xcaddy build \
             --output frankenphp-linux-x86_64 \
-            --with github.com/dunglas/frankenphp@v1.12.2 \
-            --with github.com/dunglas/frankenphp/caddy@v1.12.2 \
+            --with github.com/dunglas/frankenphp@v1.12.3 \
+            --with github.com/dunglas/frankenphp/caddy@v1.12.3 \
             --with github.com/dunglas/caddy-cbrotli@v1.0.1 \
             --with github.com/y-l-g/scheduler/module=./module \
 
