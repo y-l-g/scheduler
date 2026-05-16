@@ -1,11 +1,9 @@
-name: Build & Release
+name: Tests
 
 on:
   push:
     branches:
       - main
-    tags:
-      - "v*"
 permissions:
   contents: write
 
@@ -59,9 +57,7 @@ jobs:
             --with github.com/dunglas/frankenphp@v1.12.2 \
             --with github.com/dunglas/frankenphp/caddy@v1.12.2 \
             --with github.com/dunglas/caddy-cbrotli@v1.0.1 \
-            --with github.com/y-l-g/queue/module@main \
             --with github.com/y-l-g/scheduler/module=./module \
-            --with github.com/y-l-g/websocket/module@main
 
       - name: Run Tests (E2E)
         env:
@@ -70,29 +66,3 @@ jobs:
           cp frankenphp-linux-x86_64 module/frankenphp
           cd module
           go test -v -race ./tests/...
-          cd ../
-
-      - name: Upload Binary as Artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: frankenphp-binary
-          path: frankenphp-linux-x86_64
-
-  release:
-    name: Create GitHub Release
-    needs: build-and-test
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download Binary
-        uses: actions/download-artifact@v8
-        with:
-          name: frankenphp-binary
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v3
-        with:
-          files: frankenphp-linux-x86_64
-          draft: false
-          prerelease: false
-          generate_release_notes: true
