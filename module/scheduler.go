@@ -69,7 +69,7 @@ func (s *Scheduler) setDefaults(logger *slog.Logger) error {
 		s.Timeout = caddy.Duration(5 * time.Minute)
 	}
 	if s.Overlap == "" {
-		s.Overlap = OverlapSkip
+		s.Overlap = OverlapAllow
 	}
 	if s.Overlap != OverlapSkip && s.Overlap != OverlapAllow {
 		return fmt.Errorf("invalid overlap %q: expected %q or %q", s.Overlap, OverlapSkip, OverlapAllow)
@@ -241,7 +241,7 @@ func (s *Scheduler) cancelCommands() {
 //	    command php artisan schedule:run
 //	    dir /var/www/html
 //	    timeout 2m
-//	    overlap skip
+//	    overlap allow
 //	    shutdown_grace 30s
 //	}
 func (s *Scheduler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {

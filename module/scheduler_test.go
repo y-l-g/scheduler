@@ -11,11 +11,36 @@ import (
 	"github.com/caddyserver/caddy/v2"
 )
 
-func TestDefaultOverlapSkipsActiveRun(t *testing.T) {
+func TestDefaultOverlapAllowsConcurrentRuns(t *testing.T) {
 	logPath := tempLogPath(t)
 
 	s := newTestScheduler(t, helperCommand("sleep-write", logPath, "150ms"))
 	s.Overlap = ""
+	s.ShutdownGrace = caddy.Duration(time.Second)
+	requireStart(t, s)
+
+	s.startExec()
+	waitForContent(t, logPath, "START", time.Second)
+	s.startExec()
+
+	if err := s.Stop(); err != nil {
+		t.Fatalf("Stop failed: %v", err)
+	}
+
+	content := readFile(t, logPath)
+	if got := strings.Count(content, "START"); got != 2 {
+		t.Fatalf("expected two command starts, got %d in %q", got, content)
+	}
+	if got := strings.Count(content, "DONE"); got != 2 {
+		t.Fatalf("expected two command completions, got %d in %q", got, content)
+	}
+}
+
+func TestOverlapSkipSkipsActiveRun(t *testing.T) {
+	logPath := tempLogPath(t)
+
+	s := newTestScheduler(t, helperCommand("sleep-write", logPath, "150ms"))
+	s.Overlap = OverlapSkip
 	s.ShutdownGrace = caddy.Duration(time.Second)
 	requireStart(t, s)
 

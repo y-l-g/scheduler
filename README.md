@@ -51,7 +51,7 @@ Add a `pogo_scheduler` block to your Caddyfile. Example for Laravel:
         command        php artisan schedule:run
         dir            /var/www/html
         timeout        5m
-        overlap        skip
+        overlap        allow
         shutdown_grace 30s
     }
 }
@@ -60,7 +60,7 @@ Add a `pogo_scheduler` block to your Caddyfile. Example for Laravel:
 - **command**: command to run every minute (default: `php artisan schedule:run`).
 - **dir**: working directory for the command (optional).
 - **timeout**: max duration per run (default: 5m).
-- **overlap**: `skip` or `allow` (default: `skip`). When set to `skip`, a tick is skipped if the previous command is still running.
+- **overlap**: `allow` or `skip` (default: `allow`). When set to `skip`, a tick is skipped if the previous command is still running.
 - **shutdown_grace**: max time to let an active command finish during shutdown before it is cancelled (default: 30s).
 
 ### 3. Run Octane
@@ -80,7 +80,7 @@ php artisan octane:frankenphp --caddyfile=Caddyfile
 1. **The Ticker (Go)**: A goroutine wakes up every 60 seconds, aligned to the start of each minute (`:00`).
 2. **The Command**: At each tick, the module runs the configured command in a subprocess (e.g. `php artisan schedule:run`).
 3. **Timeout**: Each run is bounded by the configured `timeout`; the process is killed if it exceeds it.
-4. **Local Overlap Guard**: By default, a new tick is skipped if the previous command is still running.
+4. **Overlap Mode**: By default, every minute tick starts a command. Use `overlap skip` to drop a tick while the previous command is still running.
 5. **Graceful Shutdown**: On Caddy shutdown or reload, no new commands are started. The active command can finish within `shutdown_grace`; after that, it is cancelled.
 
 ## When To Use It
@@ -101,18 +101,18 @@ Poor fits:
 
 ## Overlap Behavior
 
-The default is conservative:
-
-```caddy
-overlap skip
-```
-
-If one run is still active at the next minute boundary, the new run is skipped and a warning is logged.
-
-You can opt into concurrent runs:
+The default starts a command on every minute boundary:
 
 ```caddy
 overlap allow
 ```
 
-Use `allow` only when the scheduled command is already safe to run concurrently.
+This matches Laravel's `schedule:run` behavior. Sub-minute tasks such as `everySecond()` keep `schedule:run` alive for most of the minute, and a small overrun at `:00` should not skip the whole next minute.
+
+You can opt into a local overlap guard:
+
+```caddy
+overlap skip
+```
+
+Use `skip` only when the command itself must never overlap. If one run is still active at the next minute boundary, the new run is skipped and a warning is logged.
