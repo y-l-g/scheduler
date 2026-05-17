@@ -6,6 +6,15 @@ It runs a lightweight Go ticker and executes a configurable command, such as `ph
 
 Pogo Scheduler is intentionally not a distributed scheduler. In Kubernetes production environments, prefer native `CronJob` resources.
 
+## Production status
+
+Pogo Scheduler is a small experimental module for constrained, single-binary,
+and single-node PHP deployments. Its API may change.
+
+It is not a distributed scheduler. In horizontally scaled deployments, run it as
+a singleton service or rely on application-level shared locks. In Kubernetes
+production environments, prefer native `CronJob` resources.
+
 ## Installation
 
 ### 1. Docker
