@@ -1,6 +1,6 @@
 module github.com/y-l-g/scheduler/module
 
-go 1.26.3
+go 1.27.1
 
 require github.com/caddyserver/caddy/v2 v2.11.3
 
