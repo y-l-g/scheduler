@@ -19,9 +19,9 @@ func TestDefaultOverlapAllowsConcurrentRuns(t *testing.T) {
 	s.ShutdownGrace = caddy.Duration(time.Second)
 	requireStart(t, s)
 
-	s.startExec()
+	s.startRun()
 	waitForContent(t, logPath, "START", time.Second)
-	s.startExec()
+	s.startRun()
 
 	if err := s.Stop(); err != nil {
 		t.Fatalf("Stop failed: %v", err)
@@ -44,9 +44,9 @@ func TestOverlapSkipSkipsActiveRun(t *testing.T) {
 	s.ShutdownGrace = caddy.Duration(time.Second)
 	requireStart(t, s)
 
-	s.startExec()
+	s.startRun()
 	waitForContent(t, logPath, "START", time.Second)
-	s.startExec()
+	s.startRun()
 
 	if err := s.Stop(); err != nil {
 		t.Fatalf("Stop failed: %v", err)
@@ -69,8 +69,8 @@ func TestOverlapAllowStartsConcurrentRuns(t *testing.T) {
 	s.ShutdownGrace = caddy.Duration(time.Second)
 	requireStart(t, s)
 
-	s.startExec()
-	s.startExec()
+	s.startRun()
+	s.startRun()
 
 	if err := s.Stop(); err != nil {
 		t.Fatalf("Stop failed: %v", err)
@@ -92,7 +92,7 @@ func TestShutdownGraceAllowsActiveRunToFinish(t *testing.T) {
 	s.ShutdownGrace = caddy.Duration(time.Second)
 	requireStart(t, s)
 
-	s.startExec()
+	s.startRun()
 	waitForContent(t, logPath, "START", time.Second)
 
 	if err := s.Stop(); err != nil {
@@ -112,7 +112,7 @@ func TestShutdownGraceCancelsActiveRun(t *testing.T) {
 	s.ShutdownGrace = caddy.Duration(100 * time.Millisecond)
 	requireStart(t, s)
 
-	s.startExec()
+	s.startRun()
 	waitForContent(t, logPath, "START", time.Second)
 
 	started := time.Now()
@@ -210,7 +210,7 @@ func appendLine(t *testing.T, path, line string) {
 	if err != nil {
 		t.Fatalf("open helper log: %v", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	if _, err := file.WriteString(line + "\n"); err != nil {
 		t.Fatalf("write helper log: %v", err)
